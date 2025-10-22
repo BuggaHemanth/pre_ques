@@ -436,6 +436,13 @@ CRITICAL SCORING INSTRUCTIONS:
 5. Do NOT make assumptions. If information is missing, reflect that in lower scores
 6. Be consistent - same input should produce same output
 
+CRITICAL WRITING STYLE:
+- Write the summary, findings, strengths, gaps, and opportunities in SECOND PERSON
+- Address the company directly as "you" and "your" (NOT "they", "their", "the company")
+- Example CORRECT: "You showcase strong AI capabilities..."
+- Example WRONG: "They showcase strong AI capabilities..." or "The company showcases..."
+- This is a report FOR the company professionals, so speak TO them directly
+
 Return ONLY valid JSON:
 {{
     "overall_score": <0-100>,
@@ -447,11 +454,11 @@ Return ONLY valid JSON:
         "Data Capabilities": <0-100>,
         "Innovation & R&D": <0-100>
     }},
-    "summary": "<2-3 paragraph analysis>",
-    "key_findings": ["<finding 1>", "<finding 2>", "<finding 3>"],
+    "summary": "<2-3 paragraph analysis written in SECOND PERSON addressing the company directly using 'you', 'your' - NOT third person 'they', 'their'>",
+    "key_findings": ["<finding 1 in second person>", "<finding 2 in second person>", "<finding 3 in second person>"],
     "evidence": {{
-        "strengths": ["<strength 1>", "<strength 2>"],
-        "gaps": ["<gap 1>", "<gap 2>"],
+        "strengths": ["<strength 1 in second person>", "<strength 2 in second person>"],
+        "gaps": ["<gap 1 in second person>", "<gap 2 in second person>"],
         "opportunities": ["<opportunity 1>", "<opportunity 2>"]
     }}
 }}

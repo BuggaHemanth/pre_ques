@@ -1,0 +1,14 @@
+streamlit
+langchain-google-genai
+tavily-python
+beautifulsoup4
+requests
+python-dotenv
+gspread
+google-auth
+lxml
+urllib3
+langdetect
+plotly
+reportlab
+Pillow

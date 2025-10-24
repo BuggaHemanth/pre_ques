@@ -1,14 +1,18 @@
 """
 AI Maturity Assessment Tool - Website Analysis
-Streamlit application for analyzing company AI readiness from website
+VERSION 4: Two-phase analysis with score-based opportunities
+- Phase 1: Identify gaps, generate MCQs
+- Phase 2: Calculate score (35% web + 65% MCQ), generate final content
+- Opportunities: 1 if >90, 2 if 75-90, 3 if <75
+- MCQs stored in Google Sheets (Q1-Q5 columns)
 """
 import streamlit as st
 from scraper import scrape_company_website
-from analyzer_v2 import analyze_company  # Updated to use Multi-Query approach
-from utils import (
+from analyzer_v4 import analyze_company_phase1, analyze_company_phase2
+from utils_v4 import (
     load_config, validate_config, save_to_google_sheets,
     get_maturity_badge, get_tag_color, format_score_display,
-    validate_url, validate_email, truncate_text
+    validate_url, validate_email, truncate_text, prepare_mcq_data_for_sheets
 )
 from pdf_generator import generate_assessment_pdf
 import time
@@ -216,15 +220,18 @@ if 'step' not in st.session_state:
     st.session_state.step = 'input'
 if 'scraping_results' not in st.session_state:
     st.session_state.scraping_results = None
-if 'analysis_results' not in st.session_state:
-    st.session_state.analysis_results = None
+if 'phase1_results' not in st.session_state:
+    st.session_state.phase1_results = None
+if 'final_results' not in st.session_state:
+    st.session_state.final_results = None
 
 
 def reset_app():
     """Reset application state"""
     st.session_state.step = 'input'
     st.session_state.scraping_results = None
-    st.session_state.analysis_results = None
+    st.session_state.phase1_results = None
+    st.session_state.final_results = None
 
 
 def display_landing_page():
@@ -292,11 +299,9 @@ def display_landing_page():
 
 
 def display_analysis_progress():
-    """Display analysis in progress"""
+    """Display Phase 1 analysis in progress"""
 
-    # Add spacing to center the spinner vertically
     st.markdown("<br><br><br>", unsafe_allow_html=True)
-
     st.title("Analyzing Company...")
 
     # Load config
@@ -311,7 +316,7 @@ def display_analysis_progress():
             st.rerun()
         return
 
-    # Progress tracking - centered
+    # Progress tracking
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         progress_bar = st.progress(0)
@@ -319,7 +324,7 @@ def display_analysis_progress():
 
     try:
         # Step 1: Scraping
-        status_text.info("🌐 Crawling your website...")
+        status_text.info("🌐 Extracting content from your website...")
         progress_bar.progress(0.1)
 
         scraping_results = scrape_company_website(
@@ -342,15 +347,11 @@ def display_analysis_progress():
         time.sleep(0.2)
         progress_bar.progress(0.4)
 
-        # Step 3: External search
-        status_text.info("🔎 Gathering external information...")
+        # Step 3: Phase 1 Analysis (Gaps + MCQs)
+        status_text.info("🔎 Generating questions...")
         progress_bar.progress(0.5)
-        time.sleep(0.2)
 
-        # Step 4: AI Analysis
-        progress_bar.progress(0.6)
-
-        analysis_results = analyze_company(
+        phase1_results = analyze_company_phase1(
             company_name=scraping_results['company_name'],
             website_content=scraping_results['total_text'],
             gemini_api_key=config['gemini_api_key'],
@@ -358,25 +359,17 @@ def display_analysis_progress():
             scraped_pages=scraping_results.get('pages_scraped', [])
         )
 
-        st.session_state.analysis_results = analysis_results
+        st.session_state.phase1_results = phase1_results
         progress_bar.progress(0.9)
 
-        # Debug: Print what's in analysis_results
-        print(f"\n🔍 STORING IN SESSION STATE:")
-        print(f"  - Questions: {len(analysis_results.get('questions', []))}")
-        print(f"  - Sources: {'sources' in analysis_results}")
-        if 'questions' in analysis_results:
-            for i, q in enumerate(analysis_results['questions'][:2], 1):
-                print(f"    Q{i}: {q.get('question', 'N/A')[:60]}...")
-
-        # Step 5: Complete
+        # Step 4: Complete
         status_text.success("✓ Analysis complete!")
         progress_bar.progress(1.0)
 
         time.sleep(0.3)
 
-        # Move to results
-        st.session_state.step = 'preliminary_results'
+        # Move to MCQ questions
+        st.session_state.step = 'mcq_questions'
         st.rerun()
 
     except Exception as e:
@@ -391,16 +384,10 @@ def display_analysis_progress():
             st.rerun()
 
 
-def display_preliminary_results():
-    """Display preliminary results and show MCQ questions"""
-    results = st.session_state.analysis_results
+def display_mcq_questions():
+    """Display MCQ questions from Phase 1"""
+    results = st.session_state.phase1_results
     scraping = st.session_state.scraping_results
-
-    # Debug: Print what we're retrieving
-    print(f"\n🔍 RETRIEVING FROM SESSION STATE (PRELIMINARY PAGE):")
-    print(f"  - Results type: {type(results)}")
-    print(f"  - Questions in results: {len(results.get('questions', [])) if results else 'No results'}")
-    print(f"  - All keys in results: {list(results.keys()) if results else 'No results'}")
 
     if not results or not scraping:
         st.error("No results available")
@@ -416,9 +403,10 @@ def display_preliminary_results():
     questions = results.get('questions', [])
 
     if not questions or len(questions) == 0:
-        st.error("No questions available. Proceeding to email capture...")
-        st.session_state.step = 'email_capture'
-        st.rerun()
+        st.error("No questions available. Please try again.")
+        if st.button("Restart"):
+            reset_app()
+            st.rerun()
         return
 
     # Display questions and collect answers
@@ -458,143 +446,34 @@ def display_preliminary_results():
             if len(answers) < len(questions):
                 st.error("Please answer all questions before proceeding")
             else:
-                # Store MCQ answers and move to reanalysis
+                # Store MCQ answers and move to Phase 2
                 st.session_state.mcq_answers = answers
-                st.session_state.step = 'reanalyzing'
+                st.session_state.step = 'calculating_final'
                 st.rerun()
 
 
-def display_mcq_questions():
-    """Display MCQ questions for user to answer"""
-    results = st.session_state.analysis_results
-    scraping = st.session_state.scraping_results
+def display_final_calculation():
+    """Calculate final score and generate final content (Phase 2)"""
 
-    # Debug: Print what we're retrieving
-    print(f"\n🔍 RETRIEVING FROM SESSION STATE (MCQ PAGE):")
-    print(f"  - Results type: {type(results)}")
-    print(f"  - Questions in results: {len(results.get('questions', [])) if results else 'No results'}")
-    print(f"  - All keys in results: {list(results.keys()) if results else 'No results'}")
-
-    if not results or not scraping:
-        st.error("No results available")
-        reset_app()
-        st.rerun()
-        return
-
-    st.title(f"Refine Your Assessment: {scraping['company_name']}")
-    st.markdown(f"**Current Score:** {results['overall_score']}/100 ({results['maturity_tag']})")
-
-    st.markdown("---")
-    st.info("Answer these 5 questions to get a more accurate AI maturity score tailored to your organization.")
-
-    questions = results.get('questions', [])
-
-    # Debug info - ALWAYS show at top
-    st.warning(f"DEBUG: Found {len(questions)} questions in results")
-    st.warning(f"DEBUG: Result keys: {list(results.keys())}")
-
-    with st.expander("Debug Info - Click to see full data"):
-        st.write(f"Questions in results: {len(questions)}")
-        st.json({"questions": questions, "all_keys": list(results.keys())})
-
-    if not questions or len(questions) == 0:
-        st.warning("No questions available. Proceeding to results...")
-        st.session_state.step = 'full_results'
-        st.rerun()
-        return
-
-    # Display questions and collect answers
-    answers = {}
-
-    for idx, q in enumerate(questions, 1):
-        st.markdown(f"**Q{idx}. {q['question']}**")
-
-        options = q.get('options', [])
-        option_labels = [f"{opt['label']}. {opt['text']}" for opt in options]
-
-        selected = st.radio(
-            f"Select your answer for Q{idx}:",
-            options=option_labels,
-            key=f"q{idx}",
-            label_visibility="collapsed",
-            index=None  # No preselected option
-        )
-
-        # Store answer
-        if selected:
-            selected_label = selected.split('.')[0]
-            selected_option = next((opt for opt in options if opt['label'] == selected_label), None)
-            if selected_option:
-                answers[f"q{idx}"] = selected_option
-
-        # Minimal spacing between questions
-        if idx < len(questions):
-            st.markdown("<div style='margin: 0.4rem 0;'></div>", unsafe_allow_html=True)
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # Submit button
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        if st.button("🎯 Get Final Score", type="primary", use_container_width=True):
-            if len(answers) < len(questions):
-                st.error("Please answer all questions before proceeding")
-            else:
-                # Reanalyze with MCQ answers
-                st.session_state.mcq_answers = answers
-                st.session_state.step = 'reanalyzing'
-                st.rerun()
-
-
-def display_reanalysis():
-    """Recalculate score with MCQ answers (fast path)"""
-    config = load_config()
-    scraping = st.session_state.scraping_results
-    mcq_answers = st.session_state.mcq_answers
-
-    # Add spacing to center the spinner vertically
     st.markdown("<br><br><br>", unsafe_allow_html=True)
-
     st.title("Calculating Your Final Score...")
 
     # Centered progress elements
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         progress_bar = st.progress(0.5)
-        status_text = st.info("Incorporating your answers into the analysis...")
+        status_text = st.info("Generating your personalized report...")
 
     try:
-        # Fast path: Just recalculate score, don't redo Tavily searches
-        results = st.session_state.analysis_results.copy()
+        phase1_results = st.session_state.phase1_results
+        mcq_answers = st.session_state.mcq_answers
 
-        # Calculate MCQ average score
-        mcq_scores = [ans.get('score', 50) for ans in mcq_answers.values()]
-        mcq_avg = sum(mcq_scores) / len(mcq_scores)
+        # Phase 2: Calculate score and generate final content
+        final_results = analyze_company_phase2(phase1_results, mcq_answers)
 
-        # Get base score from preliminary analysis
-        base_score = results.get('base_score', results.get('overall_score', 0))
-
-        # 40% website analysis + 60% MCQ responses
-        final_score = int((base_score * 0.4) + (mcq_avg * 0.6))
-
-        # Update scores
-        results['overall_score'] = final_score
-        results['base_score'] = base_score
-        results['mcq_score'] = int(mcq_avg)
-
-        # Update maturity tag based on final score
-        if final_score <= 25:
-            results['maturity_tag'] = "Novice"
-        elif final_score <= 50:
-            results['maturity_tag'] = "Explorer"
-        elif final_score <= 75:
-            results['maturity_tag'] = "Pacesetter"
-        else:
-            results['maturity_tag'] = "Trailblazer"
-
-        st.session_state.analysis_results = results
+        st.session_state.final_results = final_results
         progress_bar.progress(1.0)
-        status_text.success("✓ Score calculated!")
+        status_text.success("✓ Report ready!")
 
         time.sleep(0.5)
         st.session_state.step = 'full_results'
@@ -602,58 +481,16 @@ def display_reanalysis():
 
     except Exception as e:
         st.error(f"Error during calculation: {str(e)}")
-        if st.button("Continue"):
-            st.session_state.step = 'full_results'
-            st.rerun()
-
-
-def display_email_capture():
-    """Show score and proceed to full report"""
-    results = st.session_state.analysis_results
-    scraping = st.session_state.scraping_results
-
-    if not results or not scraping:
-        st.error("No results available")
-        reset_app()
-        st.rerun()
-        return
-
-    st.title(f"{scraping['company_name']} AI Maturity Results")
-
-    # Show final score
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    with col2:
-        st.markdown(f"""
-        <div class='score-badge' style='background: linear-gradient(135deg, rgb(32, 42, 68) 0%, rgb(52, 62, 88) 100%); color: white;'>
-            {get_maturity_badge(results['maturity_tag'])} {results['maturity_tag']}
-        </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(f"### Final Score: {results['overall_score']}/100")
-
-        # Show score breakdown if available
-        if 'base_score' in results and 'mcq_score' in results:
-            st.caption(f"Website Analysis: {results['base_score']}/100 | Your Responses: {results['mcq_score']}/100")
-
-    st.markdown("---")
-
-    # Direct to full report
-    st.subheader("View Your Detailed Report")
-    st.info("See comprehensive analysis, dimensional breakdown, and actionable insights")
-
-    col1, col2, col3 = st.columns([1, 2, 1])
-
-    with col2:
-        if st.button("📊 View Full Report", type="primary", use_container_width=True):
-            st.session_state.step = 'full_results'
+        if st.button("Try Again"):
+            st.session_state.step = 'mcq_questions'
             st.rerun()
 
 
 def display_full_results():
     """Display full analysis results"""
-    results = st.session_state.analysis_results
+    results = st.session_state.final_results
     scraping = st.session_state.scraping_results
+    phase1 = st.session_state.phase1_results
     config = load_config()
 
     if not results or not scraping:
@@ -692,7 +529,7 @@ def display_full_results():
         </div>
         """, unsafe_allow_html=True)
 
-    # Highlighted CTA - main goal
+    # Highlighted CTA
     st.markdown("""
     <div style='text-align: center; padding: 1rem; background: linear-gradient(135deg, rgb(32, 42, 68) 0%, rgb(52, 62, 88) 100%); border-radius: 8px; margin: 1rem 0;'>
         <p style='font-size: 1.1rem; margin: 0; color: white; font-weight: 600;'>
@@ -708,7 +545,7 @@ def display_full_results():
     st.markdown("#### Executive Summary")
     st.write(results.get('summary', 'No summary available'))
 
-    # Key findings - moved right below summary
+    # Key findings
     st.markdown("#### Key Findings")
 
     evidence = results.get('evidence', {})
@@ -724,56 +561,14 @@ def display_full_results():
         for opp in evidence.get('opportunities', []):
             st.markdown(f"""<div class='finding-item'>{opp}</div>""", unsafe_allow_html=True)
 
-    # Dimensional scores - Spider Chart
-    st.markdown("#### Detailed Breakdown")
-
-    dimensional_scores = results.get('dimensional_scores', {})
-
-    if dimensional_scores:
-        # Create spider chart
-        dimensions = list(dimensional_scores.keys())
-        scores = list(dimensional_scores.values())
-
-        fig = go.Figure()
-
-        fig.add_trace(go.Scatterpolar(
-            r=scores,
-            theta=dimensions,
-            fill='toself',
-            fillcolor='rgba(32, 42, 68, 0.3)',
-            line=dict(color='rgb(32, 42, 68)', width=2),
-            name='AI Maturity Score'
-        ))
-
-        fig.update_layout(
-            polar=dict(
-                radialaxis=dict(
-                    visible=True,
-                    range=[0, 100],
-                    tickmode='linear',
-                    tick0=0,
-                    dtick=25,
-                    gridcolor='lightgray'
-                ),
-                angularaxis=dict(
-                    gridcolor='lightgray'
-                )
-            ),
-            showlegend=False,
-            height=380,
-            margin=dict(l=50, r=50, t=10, b=10)
-        )
-
-        st.plotly_chart(fig, use_container_width=True)
-
-    # Links Analyzed - below spider chart
-    st.markdown("#### Links Analyzed")
+    # Links Analyzed
+    st.markdown("#### Sources Analyzed")
 
     sources = results.get('sources', {})
     col1, col2 = st.columns(2)
 
     with col1:
-        st.markdown("**Website Pages Analyzed**")
+        st.markdown("**Website Pages**")
         scraped_pages = sources.get('scraped_pages', [])
         if scraped_pages:
             for page in scraped_pages[:8]:
@@ -797,12 +592,17 @@ def display_full_results():
     tavily_links = ', '.join([s.get('url', '') for s in sources.get('external_sources', [])])
     scraped_links = ', '.join([p.get('url', '') for p in sources.get('scraped_pages', [])])
 
+    # Prepare MCQ data for sheets
+    questions = phase1.get('questions', [])
+    mcq_answers = st.session_state.get('mcq_answers', {})
+    mcq_sheet_data = prepare_mcq_data_for_sheets(questions, mcq_answers)
+
     save_data = {
         'name': st.session_state.get('user_name', ''),
         'email': st.session_state.get('user_email', ''),
         'company_name': scraping['company_name'],
         'website_url': st.session_state.website_url,
-        'initial_score': results.get('base_score', results['overall_score']),
+        'initial_score': results.get('web_score', 0),
         'mcq_score': results.get('mcq_score', 0),
         'final_score': results['overall_score'],
         'maturity_tag': results['maturity_tag'],
@@ -811,10 +611,10 @@ def display_full_results():
         'tavily_links': tavily_links,
         'scraped_links': scraped_links,
         'pages_crawled': scraping['page_count'],
-        'summary': results.get('summary', '')[:500]  # Limit length
+        'summary': results.get('summary', '')[:500]
     }
 
-    success, message = save_to_google_sheets(save_data, config)
+    success, message = save_to_google_sheets(save_data, config, mcq_sheet_data)
     if not success and 'not configured' not in message:
         st.warning(f"⚠️ {message}")
 
@@ -824,7 +624,6 @@ def display_full_results():
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         # Generate PDF
-        mcq_answers = st.session_state.get('mcq_answers', {})
         pdf_buffer = generate_assessment_pdf(results, scraping, mcq_answers)
 
         st.download_button(
@@ -846,12 +645,10 @@ def main():
         display_landing_page()
     elif step == 'analyzing':
         display_analysis_progress()
-    elif step == 'preliminary_results':
-        display_preliminary_results()  # Now shows MCQs
-    elif step == 'reanalyzing':
-        display_reanalysis()
-    elif step == 'email_capture':
-        display_email_capture()  # New step - show score and ask email
+    elif step == 'mcq_questions':
+        display_mcq_questions()
+    elif step == 'calculating_final':
+        display_final_calculation()
     elif step == 'full_results':
         display_full_results()
     else:
